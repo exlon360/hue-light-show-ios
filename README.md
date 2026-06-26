@@ -21,7 +21,7 @@ Every selected light starts in the Global Lights Group. Change the Global Lights
 
 Tap `Custom` under a selected light to give that light its own color cycle and transition. Tap `Global` again to put it back into the shared Global Lights Group.
 
-Global and custom lights run together when START is tapped. Each light uses its own colors and transition in the same show loop.
+Global and custom lights run together when START is tapped. Custom lights are removed from the Global Lights Group at runtime and each custom light gets its own color cycle, transition, and timing state.
 
 ## Infinite Shows And Backgrounding
 

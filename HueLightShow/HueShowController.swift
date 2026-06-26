@@ -2,10 +2,17 @@ import Foundation
 import SwiftUI
 import UIKit
 
-private struct HueLightRunSettings {
-    let lightID: String
+private struct HueLightRunGroup {
+    let lightIDs: [String]
     let colors: [HueShowColor]
     let transitionStyle: HueTransitionStyle
+    let isCustom: Bool
+}
+
+private struct HueLightRunState {
+    var group: HueLightRunGroup
+    var colorIndex: Int
+    var nextRunDate: Date
 }
 
 @MainActor
@@ -208,7 +215,7 @@ final class HueShowController: ObservableObject {
             updated.removeValue(forKey: lightID)
             statusMessage = "Light returned to the Global group."
         } else {
-            updated[lightID] = HueLightCustomSettings(colors: colors, transitionStyle: transitionStyle)
+            updated[lightID] = HueLightCustomSettings(colors: detachedColors(from: colors), transitionStyle: transitionStyle)
             statusMessage = "Light now has custom settings."
         }
         customLightSettings = updated
@@ -285,17 +292,18 @@ final class HueShowController: ObservableObject {
         }
 
         let runBridgeAddress = bridgeAddress
-        let runLightSettings = makeRunSettingsForSelectedLights()
+        let runGroups = makeRunGroupsForSelectedLights()
         let runDuration = isInfiniteDuration ? nil : showDuration
         let runInterval = changeInterval
-        let customCount = runLightSettings.filter { customLightSettings[$0.lightID] != nil }.count
+        let lightCount = runGroups.reduce(0) { $0 + $1.lightIDs.count }
+        let customCount = runGroups.filter(\.isCustom).reduce(0) { $0 + $1.lightIDs.count }
 
         isRunning = true
         remainingSeconds = runDuration.map { Int(ceil($0)) } ?? 0
         setIdleTimerDisabled(true)
         beginBackgroundRunAllowance()
         let durationText = isInfiniteDuration ? "forever" : "\(Int(showDuration))s"
-        statusMessage = "Running \(durationText) on \(runLightSettings.count) light\(runLightSettings.count == 1 ? "" : "s") (\(customCount) custom)."
+        statusMessage = "Running \(durationText) on \(lightCount) light\(lightCount == 1 ? "" : "s") (\(customCount) custom)."
 
         showTask = Task { [weak self] in
             guard let self = self else {
@@ -304,7 +312,7 @@ final class HueShowController: ObservableObject {
             await self.runShow(
                 bridgeAddress: runBridgeAddress,
                 username: username,
-                lightSettings: runLightSettings,
+                runGroups: runGroups,
                 duration: runDuration,
                 interval: runInterval
             )
@@ -326,28 +334,40 @@ final class HueShowController: ObservableObject {
     private func runShow(
         bridgeAddress: String,
         username: String,
-        lightSettings: [HueLightRunSettings],
+        runGroups: [HueLightRunGroup],
         duration: Double?,
         interval: Double
     ) async {
         let endDate = duration.map { Date().addingTimeInterval($0) }
-        var colorIndex = 0
+        var runStates = runGroups.map {
+            HueLightRunState(group: $0, colorIndex: 0, nextRunDate: Date())
+        }
 
         do {
             while shouldContinueRunning(until: endDate) {
                 try Task.checkCancellation()
 
-                try await applyTransitionsForLightSettings(
-                    bridgeAddress: bridgeAddress,
-                    username: username,
-                    lightSettings: lightSettings,
-                    colorIndex: colorIndex,
-                    interval: interval
-                )
+                let now = Date()
+                for index in runStates.indices where runStates[index].nextRunDate <= now {
+                    try Task.checkCancellation()
 
-                colorIndex += 1
-                let waitSeconds = lightSettings.map { $0.transitionStyle.waitSeconds(for: interval) }.max() ?? interval
-                try await sleepWithProgress(maxSeconds: waitSeconds, endDate: endDate)
+                    let state = runStates[index]
+                    let showColor = state.group.colors[state.colorIndex % state.group.colors.count].bridgeColor
+                    try await applyTransitionToLights(
+                        bridgeAddress: bridgeAddress,
+                        username: username,
+                        lightIDs: state.group.lightIDs,
+                        color: showColor,
+                        style: state.group.transitionStyle,
+                        interval: interval
+                    )
+
+                    runStates[index].colorIndex = (state.colorIndex + 1) % state.group.colors.count
+                    runStates[index].nextRunDate = Date().addingTimeInterval(state.group.transitionStyle.waitSeconds(for: interval))
+                }
+
+                let nextRunDate = runStates.map(\.nextRunDate).min() ?? Date().addingTimeInterval(interval)
+                try await sleepWithProgress(maxSeconds: max(0.05, nextRunDate.timeIntervalSinceNow), endDate: endDate)
             }
 
             statusMessage = "Show complete."
@@ -366,50 +386,44 @@ final class HueShowController: ObservableObject {
         showTask = nil
     }
 
-    private func makeRunSettingsForSelectedLights() -> [HueLightRunSettings] {
-        Array(selectedLightIDs).sorted().map { lightID in
-            let customSettings = customLightSettings[lightID]
-            let lightColors = customSettings?.colors ?? colors
-            return HueLightRunSettings(
-                lightID: lightID,
-                colors: lightColors.isEmpty ? HueShowColor.presets : lightColors,
-                transitionStyle: customSettings?.transitionStyle ?? transitionStyle
+    private func makeRunGroupsForSelectedLights() -> [HueLightRunGroup] {
+        let sortedSelectedLightIDs = Array(selectedLightIDs).sorted()
+        let globalLightIDs = sortedSelectedLightIDs.filter { customLightSettings[$0] == nil }
+        var groups: [HueLightRunGroup] = []
+
+        if !globalLightIDs.isEmpty {
+            groups.append(
+                HueLightRunGroup(
+                    lightIDs: globalLightIDs,
+                    colors: colors.isEmpty ? HueShowColor.presets : colors,
+                    transitionStyle: transitionStyle,
+                    isCustom: false
+                )
             )
         }
-    }
 
-    private func applyTransitionsForLightSettings(
-        bridgeAddress: String,
-        username: String,
-        lightSettings: [HueLightRunSettings],
-        colorIndex: Int,
-        interval: Double
-    ) async throws {
-        let groupedSettings = Dictionary(grouping: lightSettings, by: { $0.transitionStyle })
-        for style in HueTransitionStyle.allCases {
-            guard let settingsForStyle = groupedSettings[style] else {
+        for lightID in sortedSelectedLightIDs {
+            guard let customSettings = customLightSettings[lightID] else {
                 continue
             }
-            let lightIDs = settingsForStyle.map { $0.lightID }
-            let colorsByLightID = Dictionary(uniqueKeysWithValues: settingsForStyle.map { settings in
-                (settings.lightID, settings.colors[colorIndex % settings.colors.count].bridgeColor)
-            })
-            try await applyTransitionToLights(
-                bridgeAddress: bridgeAddress,
-                username: username,
-                lightIDs: lightIDs,
-                colorsByLightID: colorsByLightID,
-                style: style,
-                interval: interval
+            groups.append(
+                HueLightRunGroup(
+                    lightIDs: [lightID],
+                    colors: customSettings.colors.isEmpty ? HueShowColor.presets : customSettings.colors,
+                    transitionStyle: customSettings.transitionStyle,
+                    isCustom: true
+                )
             )
         }
+
+        return groups
     }
 
     private func applyTransitionToLights(
         bridgeAddress: String,
         username: String,
         lightIDs: [String],
-        colorsByLightID: [String: HueBridgeColor],
+        color: HueBridgeColor,
         style: HueTransitionStyle,
         interval: Double
     ) async throws {
@@ -417,9 +431,6 @@ final class HueShowController: ObservableObject {
         case .snap, .gradual, .softFade:
             for lightID in lightIDs {
                 try Task.checkCancellation()
-                guard let color = colorsByLightID[lightID] else {
-                    continue
-                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -432,9 +443,6 @@ final class HueShowController: ObservableObject {
             let dipSeconds = min(0.45, max(0.12, interval * 0.25))
             for lightID in lightIDs {
                 try Task.checkCancellation()
-                guard let color = colorsByLightID[lightID] else {
-                    continue
-                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -446,9 +454,6 @@ final class HueShowController: ObservableObject {
             try await Task.sleep(nanoseconds: UInt64(dipSeconds * 1_000_000_000))
             for lightID in lightIDs {
                 try Task.checkCancellation()
-                guard let color = colorsByLightID[lightID] else {
-                    continue
-                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -471,9 +476,6 @@ final class HueShowController: ObservableObject {
             try await Task.sleep(nanoseconds: 120_000_000)
             for lightID in lightIDs {
                 try Task.checkCancellation()
-                guard let color = colorsByLightID[lightID] else {
-                    continue
-                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -577,6 +579,10 @@ final class HueShowController: ObservableObject {
         var updated = customLightSettings
         updated[lightID] = settings
         customLightSettings = updated
+    }
+
+    private func detachedColors(from colors: [HueShowColor]) -> [HueShowColor] {
+        colors.map { HueShowColor(red: $0.red, green: $0.green, blue: $0.blue) }
     }
 
     private func nextColor(for count: Int) -> HueShowColor {
