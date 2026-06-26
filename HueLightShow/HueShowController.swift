@@ -43,12 +43,18 @@ final class HueShowController: ObservableObject {
             UserDefaults.standard.set(changeInterval, forKey: Self.intervalKey)
         }
     }
+    @Published var transitionStyle: HueTransitionStyle {
+        didSet {
+            UserDefaults.standard.set(transitionStyle.rawValue, forKey: Self.transitionStyleKey)
+        }
+    }
     @Published var statusMessage: String = "Ready."
     @Published var isBusy = false
     @Published var isRunning = false
     @Published var remainingSeconds = 0
 
     private let client: HueBridgeClient
+    private let bundledBridgeConfig: HueBridgeConfiguration
     private var showTask: Task<Void, Never>?
 
     private static let bridgeAddressKey = "HueLightShow.bridgeAddress"
@@ -57,12 +63,19 @@ final class HueShowController: ObservableObject {
     private static let colorsKey = "HueLightShow.colors"
     private static let durationKey = "HueLightShow.duration"
     private static let intervalKey = "HueLightShow.interval"
+    private static let transitionStyleKey = "HueLightShow.transitionStyle"
 
     init(client: HueBridgeClient = .shared) {
+        let bundledConfig = HueBridgeConfiguration.loadBundled()
+
         self.client = client
-        self.bridgeAddress = UserDefaults.standard.string(forKey: Self.bridgeAddressKey) ?? ""
-        self.username = UserDefaults.standard.string(forKey: Self.usernameKey)
+        self.bundledBridgeConfig = bundledConfig
+        self.bridgeAddress = UserDefaults.standard.string(forKey: Self.bridgeAddressKey)
+            ?? HueBridgeConfiguration.cleaned(bundledConfig.bridgeAddress)
+            ?? ""
+        self.username = UserDefaults.standard.string(forKey: Self.usernameKey) ?? bundledConfig.effectiveUsername
         self.selectedLightID = UserDefaults.standard.string(forKey: Self.selectedLightKey)
+            ?? HueBridgeConfiguration.cleaned(bundledConfig.selectedLightID)
         self.colors = Self.loadColors()
 
         let savedDuration = UserDefaults.standard.double(forKey: Self.durationKey)
@@ -70,6 +83,13 @@ final class HueShowController: ObservableObject {
 
         let savedInterval = UserDefaults.standard.double(forKey: Self.intervalKey)
         self.changeInterval = savedInterval > 0 ? savedInterval : 1.2
+
+        let savedTransition = UserDefaults.standard.string(forKey: Self.transitionStyleKey)
+        self.transitionStyle = savedTransition.flatMap(HueTransitionStyle.init(rawValue:)) ?? .gradual
+
+        if bundledConfig.hasConnectionDefaults {
+            self.statusMessage = "Loaded BridgeConfig.plist."
+        }
     }
 
     var isPaired: Bool {
@@ -126,14 +146,6 @@ final class HueShowController: ObservableObject {
         }
     }
 
-    func forgetPairing() {
-        stopShow()
-        username = nil
-        lights = []
-        selectedLightID = nil
-        statusMessage = "Pairing cleared."
-    }
-
     func addColor() {
         let nextColor: HueShowColor
         switch colors.count % 5 {
@@ -181,10 +193,11 @@ final class HueShowController: ObservableObject {
         let runColors = colors
         let runDuration = showDuration
         let runInterval = changeInterval
+        let runTransitionStyle = transitionStyle
 
         isRunning = true
         remainingSeconds = Int(ceil(runDuration))
-        statusMessage = "Show running."
+        statusMessage = "Show running with \(runTransitionStyle.title)."
 
         showTask = Task { [weak self] in
             guard let self = self else {
@@ -196,7 +209,8 @@ final class HueShowController: ObservableObject {
                 lightID: selectedLightID,
                 colors: runColors,
                 duration: runDuration,
-                interval: runInterval
+                interval: runInterval,
+                transitionStyle: runTransitionStyle
             )
         }
     }
@@ -217,7 +231,8 @@ final class HueShowController: ObservableObject {
         lightID: String,
         colors: [HueShowColor],
         duration: Double,
-        interval: Double
+        interval: Double,
+        transitionStyle: HueTransitionStyle
     ) async {
         let endDate = Date().addingTimeInterval(duration)
         var colorIndex = 0
@@ -227,16 +242,17 @@ final class HueShowController: ObservableObject {
                 try Task.checkCancellation()
 
                 let showColor = colors[colorIndex % colors.count].bridgeColor
-                try await client.setLight(
+                try await applyTransition(
                     bridgeAddress: bridgeAddress,
                     username: username,
                     lightID: lightID,
                     color: showColor,
-                    transitionSeconds: interval
+                    style: transitionStyle,
+                    interval: interval
                 )
 
                 colorIndex += 1
-                try await sleepWithProgress(maxSeconds: interval, endDate: endDate)
+                try await sleepWithProgress(maxSeconds: transitionStyle.waitSeconds(for: interval), endDate: endDate)
             }
 
             statusMessage = "Show complete."
@@ -249,6 +265,59 @@ final class HueShowController: ObservableObject {
         isRunning = false
         remainingSeconds = 0
         showTask = nil
+    }
+
+    private func applyTransition(
+        bridgeAddress: String,
+        username: String,
+        lightID: String,
+        color: HueBridgeColor,
+        style: HueTransitionStyle,
+        interval: Double
+    ) async throws {
+        switch style {
+        case .snap, .gradual, .softFade:
+            try await client.setLight(
+                bridgeAddress: bridgeAddress,
+                username: username,
+                lightID: lightID,
+                color: color,
+                transitionSeconds: style.commandTransitionSeconds(for: interval)
+            )
+        case .pulse:
+            let dipSeconds = min(0.45, max(0.12, interval * 0.25))
+            try await client.setLight(
+                bridgeAddress: bridgeAddress,
+                username: username,
+                lightID: lightID,
+                color: color.scaledBrightness(0.2),
+                transitionSeconds: dipSeconds
+            )
+            try await Task.sleep(nanoseconds: UInt64(dipSeconds * 1_000_000_000))
+            try await client.setLight(
+                bridgeAddress: bridgeAddress,
+                username: username,
+                lightID: lightID,
+                color: color,
+                transitionSeconds: style.commandTransitionSeconds(for: interval)
+            )
+        case .blink:
+            try await client.setLightPower(
+                bridgeAddress: bridgeAddress,
+                username: username,
+                lightID: lightID,
+                isOn: false,
+                transitionSeconds: 0.0
+            )
+            try await Task.sleep(nanoseconds: 120_000_000)
+            try await client.setLight(
+                bridgeAddress: bridgeAddress,
+                username: username,
+                lightID: lightID,
+                color: color,
+                transitionSeconds: 0.0
+            )
+        }
     }
 
     private func sleepWithProgress(maxSeconds: Double, endDate: Date) async throws {
@@ -272,6 +341,9 @@ final class HueShowController: ObservableObject {
 
         if let currentSelection = selectedLightID, fetchedLights.contains(where: { $0.id == currentSelection }) {
             selectedLightID = currentSelection
+        } else if let configuredLightName = HueBridgeConfiguration.cleaned(bundledBridgeConfig.selectedLightName),
+                  let configuredLight = fetchedLights.first(where: { $0.name.localizedCaseInsensitiveCompare(configuredLightName) == .orderedSame }) {
+            selectedLightID = configuredLight.id
         } else {
             selectedLightID = fetchedLights.first?.id
         }

@@ -74,17 +74,6 @@ struct ContentView: View {
                         }
                     }
                     .disabled(show.bridgeAddress.isEmpty || show.isBusy)
-
-                    Button {
-                        show.forgetPairing()
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.headline.weight(.bold))
-                            .frame(width: 44, height: 44)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                    .disabled(show.isPaired == false)
                 }
 
                 StatusStrip(message: show.statusMessage, isBusy: show.isBusy, isPaired: show.isPaired)
@@ -155,6 +144,25 @@ struct ContentView: View {
                     .font(.subheadline.weight(.semibold))
 
                     Slider(value: $show.changeInterval, in: 0.2...10, step: 0.1)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("Transition", systemImage: show.transitionStyle.symbolName)
+                        Spacer()
+                        Picker("Transition", selection: $show.transitionStyle) {
+                            ForEach(HueTransitionStyle.allCases) { style in
+                                Text(style.title).tag(style)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    .font(.subheadline.weight(.semibold))
+
+                    Text(show.transitionStyle.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }

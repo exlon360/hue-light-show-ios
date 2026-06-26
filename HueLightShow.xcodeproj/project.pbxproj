@@ -12,6 +12,7 @@
 		F30000000000000000000003 /* HueBridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30000000000000000000013 /* HueBridgeClient.swift */; };
 		F30000000000000000000004 /* HueShowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30000000000000000000014 /* HueShowController.swift */; };
 		F30000000000000000000005 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30000000000000000000015 /* ContentView.swift */; };
+		F30000000000000000000006 /* BridgeConfig.plist in Resources */ = {isa = PBXBuildFile; fileRef = F30000000000000000000017 /* BridgeConfig.plist */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +23,7 @@
 		F30000000000000000000014 /* HueShowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HueShowController.swift; sourceTree = "<group>"; };
 		F30000000000000000000015 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		F30000000000000000000016 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		F30000000000000000000017 /* BridgeConfig.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = BridgeConfig.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -51,6 +53,7 @@
 				F30000000000000000000013 /* HueBridgeClient.swift */,
 				F30000000000000000000014 /* HueShowController.swift */,
 				F30000000000000000000015 /* ContentView.swift */,
+				F30000000000000000000017 /* BridgeConfig.plist */,
 				F30000000000000000000016 /* Info.plist */,
 			);
 			path = HueLightShow;
@@ -122,6 +125,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F30000000000000000000006 /* BridgeConfig.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

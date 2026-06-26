@@ -109,4 +109,134 @@ struct HueBridgeColor: Equatable {
     let hue: Int
     let saturation: Int
     let brightness: Int
+
+    func scaledBrightness(_ multiplier: Double) -> HueBridgeColor {
+        HueBridgeColor(
+            hue: hue,
+            saturation: saturation,
+            brightness: max(1, min(254, Int((Double(brightness) * multiplier).rounded())))
+        )
+    }
+}
+
+struct HueBridgeConfiguration: Decodable {
+    let bridgeAddress: String?
+    let username: String?
+    let applicationKey: String?
+    let selectedLightID: String?
+    let selectedLightName: String?
+    let autoRefreshLights: Bool?
+
+    var effectiveUsername: String? {
+        Self.cleaned(username) ?? Self.cleaned(applicationKey)
+    }
+
+    var hasConnectionDefaults: Bool {
+        Self.cleaned(bridgeAddress) != nil && effectiveUsername != nil
+    }
+
+    static func loadBundled() -> HueBridgeConfiguration {
+        guard
+            let url = Bundle.main.url(forResource: "BridgeConfig", withExtension: "plist"),
+            let data = try? Data(contentsOf: url),
+            let config = try? PropertyListDecoder().decode(HueBridgeConfiguration.self, from: data)
+        else {
+            return HueBridgeConfiguration(
+                bridgeAddress: nil,
+                username: nil,
+                applicationKey: nil,
+                selectedLightID: nil,
+                selectedLightName: nil,
+                autoRefreshLights: true
+            )
+        }
+
+        return config
+    }
+
+    static func cleaned(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+}
+
+enum HueTransitionStyle: String, CaseIterable, Codable, Identifiable {
+    case snap
+    case gradual
+    case softFade
+    case pulse
+    case blink
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .snap:
+            return "Snap"
+        case .gradual:
+            return "Gradual"
+        case .softFade:
+            return "Soft Fade"
+        case .pulse:
+            return "Pulse"
+        case .blink:
+            return "Blink"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .snap:
+            return "Instantly jumps to each color."
+        case .gradual:
+            return "Slowly crossfades to the next color."
+        case .softFade:
+            return "Uses a longer, smoother fade."
+        case .pulse:
+            return "Dips dim, then blooms into the next color."
+        case .blink:
+            return "Briefly cuts out before the next color."
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .snap:
+            return "bolt.fill"
+        case .gradual:
+            return "dial.medium.fill"
+        case .softFade:
+            return "sparkles"
+        case .pulse:
+            return "circle.dotted"
+        case .blink:
+            return "lightbulb.max.fill"
+        }
+    }
+
+    func commandTransitionSeconds(for changeInterval: Double) -> Double {
+        switch self {
+        case .snap, .blink:
+            return 0.0
+        case .gradual:
+            return max(0.2, changeInterval)
+        case .softFade:
+            return max(0.4, changeInterval * 1.6)
+        case .pulse:
+            return max(0.2, changeInterval * 0.55)
+        }
+    }
+
+    func waitSeconds(for changeInterval: Double) -> Double {
+        switch self {
+        case .snap, .gradual, .pulse, .blink:
+            return changeInterval
+        case .softFade:
+            return max(changeInterval, changeInterval * 1.25)
+        }
+    }
 }

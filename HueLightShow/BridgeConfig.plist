@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Fill these in before building your personal IPA if you want the app to skip manual bridge setup after updates. -->
+	<key>bridgeAddress</key>
+	<string></string>
+	<key>username</key>
+	<string></string>
+	<key>applicationKey</key>
+	<string></string>
+	<key>selectedLightID</key>
+	<string></string>
+	<key>selectedLightName</key>
+	<string></string>
+	<key>autoRefreshLights</key>
+	<true/>
+</dict>
+</plist>

@@ -114,7 +114,7 @@ final class HueBridgeClient: NSObject, URLSessionDelegate {
         color: HueBridgeColor,
         transitionSeconds: Double
     ) async throws {
-        let transitionTime = max(1, min(600, Int((transitionSeconds * 10.0).rounded())))
+        let transitionTime = transitionTimeUnits(for: transitionSeconds)
         let body: [String: Any] = [
             "on": true,
             "hue": color.hue,
@@ -129,6 +129,30 @@ final class HueBridgeClient: NSObject, URLSessionDelegate {
             jsonObject: body
         )
         try validateHueCommandResponse(data)
+    }
+
+    func setLightPower(
+        bridgeAddress: String,
+        username: String,
+        lightID: String,
+        isOn: Bool,
+        transitionSeconds: Double
+    ) async throws {
+        let body: [String: Any] = [
+            "on": isOn,
+            "transitiontime": transitionTimeUnits(for: transitionSeconds)
+        ]
+        let data = try await sendBridgeRequest(
+            bridgeAddress: bridgeAddress,
+            path: "/api/\(username)/lights/\(lightID)/state",
+            method: "PUT",
+            jsonObject: body
+        )
+        try validateHueCommandResponse(data)
+    }
+
+    private func transitionTimeUnits(for seconds: Double) -> Int {
+        max(0, min(600, Int((seconds * 10.0).rounded())))
     }
 
     private func sendBridgeRequest(
