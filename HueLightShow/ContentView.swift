@@ -82,36 +82,45 @@ struct ContentView: View {
     }
 
     private var lightPanel: some View {
-        ControlPanel(title: "Light", symbolName: "lightbulb.led.fill") {
+        ControlPanel(title: "Lights", symbolName: "lightbulb.led.fill") {
             VStack(alignment: .leading, spacing: 12) {
-                Picker("Light", selection: $show.selectedLightID) {
-                    Text("Select").tag(Optional<String>.none)
-                    ForEach(show.lights) { light in
-                        Text(light.name).tag(Optional(light.id))
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(show.selectedLightCount) selected")
+                            .font(.subheadline.weight(.black))
+                        Text(show.selectedLightSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
                     }
+
+                    Spacer()
+
+                    Button {
+                        show.selectAllLights()
+                    } label: {
+                        Label("All", systemImage: "checklist.checked")
+                            .font(.subheadline.weight(.bold))
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(show.lights.isEmpty)
                 }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .disabled(show.lights.isEmpty)
 
-                if let selectedLight = show.selectedLight {
-                    HStack(spacing: 8) {
-                        Label(selectedLight.isReachable ? "Reachable" : "Offline", systemImage: selectedLight.isReachable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(selectedLight.isReachable ? .green : .orange)
-
-                        Spacer()
-
-                        Text(selectedLight.isColorCapable ? "Color" : selectedLight.type)
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(Color(.tertiarySystemGroupedBackground), in: Capsule())
-                    }
-                    .font(.subheadline.weight(.semibold))
-                } else {
+                if show.lights.isEmpty {
                     Text(show.isPaired ? "No lights loaded." : "Pair a bridge to load lights.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(show.lights) { light in
+                            LightSelectionRow(
+                                light: light,
+                                isSelected: show.isLightSelected(light.id)
+                            ) {
+                                show.toggleLightSelection(light.id)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -302,6 +311,49 @@ private struct ActionButton: View {
         }
         .buttonStyle(.bordered)
         .tint(tint)
+    }
+}
+
+private struct LightSelectionRow: View {
+    let light: HueLight
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(isSelected ? .teal : .secondary)
+                    .frame(width: 28, height: 28)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(light.name)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    HStack(spacing: 6) {
+                        Label(light.isReachable ? "Reachable" : "Offline", systemImage: light.isReachable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(light.isReachable ? .green : .orange)
+
+                        Text(light.isColorCapable ? "Color" : light.type)
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(isSelected ? Color.teal.opacity(0.12) : Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isSelected ? Color.teal.opacity(0.35) : Color.primary.opacity(0.07), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 

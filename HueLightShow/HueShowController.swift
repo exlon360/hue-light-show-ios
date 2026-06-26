@@ -19,13 +19,9 @@ final class HueShowController: ObservableObject {
         }
     }
     @Published var lights: [HueLight] = []
-    @Published var selectedLightID: String? {
+    @Published var selectedLightIDs: Set<String> {
         didSet {
-            if let selectedLightID = selectedLightID {
-                UserDefaults.standard.set(selectedLightID, forKey: Self.selectedLightKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: Self.selectedLightKey)
-            }
+            UserDefaults.standard.set(Array(selectedLightIDs).sorted(), forKey: Self.selectedLightsKey)
         }
     }
     @Published var colors: [HueShowColor] {
@@ -60,6 +56,7 @@ final class HueShowController: ObservableObject {
     private static let bridgeAddressKey = "HueLightShow.bridgeAddress"
     private static let usernameKey = "HueLightShow.username"
     private static let selectedLightKey = "HueLightShow.selectedLightID"
+    private static let selectedLightsKey = "HueLightShow.selectedLightIDs"
     private static let colorsKey = "HueLightShow.colors"
     private static let durationKey = "HueLightShow.duration"
     private static let intervalKey = "HueLightShow.interval"
@@ -74,8 +71,7 @@ final class HueShowController: ObservableObject {
             ?? HueBridgeConfiguration.cleaned(bundledConfig.bridgeAddress)
             ?? ""
         self.username = UserDefaults.standard.string(forKey: Self.usernameKey) ?? bundledConfig.effectiveUsername
-        self.selectedLightID = UserDefaults.standard.string(forKey: Self.selectedLightKey)
-            ?? HueBridgeConfiguration.cleaned(bundledConfig.selectedLightID)
+        self.selectedLightIDs = Self.loadSelectedLightIDs(from: bundledConfig)
         self.colors = Self.loadColors()
 
         let savedDuration = UserDefaults.standard.double(forKey: Self.durationKey)
@@ -96,16 +92,32 @@ final class HueShowController: ObservableObject {
         username?.isEmpty == false
     }
 
-    var selectedLight: HueLight? {
-        guard let selectedLightID = selectedLightID else {
-            return nil
+    var selectedLights: [HueLight] {
+        lights.filter { selectedLightIDs.contains($0.id) }
+    }
+
+    var selectedLightCount: Int {
+        selectedLightIDs.count
+    }
+
+    var selectedLightSummary: String {
+        if selectedLightIDs.isEmpty {
+            return "No lights selected."
         }
-        return lights.first { $0.id == selectedLightID }
+
+        let visibleNames = selectedLights.map { $0.name }
+        if visibleNames.isEmpty {
+            return "\(selectedLightIDs.count) configured light\(selectedLightIDs.count == 1 ? "" : "s")."
+        }
+        if visibleNames.count <= 2 {
+            return visibleNames.joined(separator: ", ")
+        }
+        return "\(visibleNames[0]), \(visibleNames[1]) +\(visibleNames.count - 2)"
     }
 
     var canStart: Bool {
         isPaired &&
-        selectedLightID != nil &&
+        !selectedLightIDs.isEmpty &&
         !colors.isEmpty &&
         showDuration >= 1 &&
         changeInterval >= 0.2 &&
@@ -146,6 +158,24 @@ final class HueShowController: ObservableObject {
         }
     }
 
+    func isLightSelected(_ lightID: String) -> Bool {
+        selectedLightIDs.contains(lightID)
+    }
+
+    func toggleLightSelection(_ lightID: String) {
+        var updatedSelection = selectedLightIDs
+        if updatedSelection.contains(lightID) {
+            updatedSelection.remove(lightID)
+        } else {
+            updatedSelection.insert(lightID)
+        }
+        selectedLightIDs = updatedSelection
+    }
+
+    func selectAllLights() {
+        selectedLightIDs = Set(lights.map { $0.id })
+    }
+
     func addColor() {
         let nextColor: HueShowColor
         switch colors.count % 5 {
@@ -181,15 +211,16 @@ final class HueShowController: ObservableObject {
 
     func startShow() {
         guard canStart else {
-            statusMessage = "Select a paired bridge and light first."
+            statusMessage = "Select a paired bridge and at least one light first."
             return
         }
-        guard let username = username, let selectedLightID = selectedLightID else {
+        guard let username = username else {
             statusMessage = "Pair with the Hue Bridge first."
             return
         }
 
         let runBridgeAddress = bridgeAddress
+        let runLightIDs = Array(selectedLightIDs).sorted()
         let runColors = colors
         let runDuration = showDuration
         let runInterval = changeInterval
@@ -197,7 +228,7 @@ final class HueShowController: ObservableObject {
 
         isRunning = true
         remainingSeconds = Int(ceil(runDuration))
-        statusMessage = "Show running with \(runTransitionStyle.title)."
+        statusMessage = "Show running on \(runLightIDs.count) light\(runLightIDs.count == 1 ? "" : "s") with \(runTransitionStyle.title)."
 
         showTask = Task { [weak self] in
             guard let self = self else {
@@ -206,7 +237,7 @@ final class HueShowController: ObservableObject {
             await self.runShow(
                 bridgeAddress: runBridgeAddress,
                 username: username,
-                lightID: selectedLightID,
+                lightIDs: runLightIDs,
                 colors: runColors,
                 duration: runDuration,
                 interval: runInterval,
@@ -228,7 +259,7 @@ final class HueShowController: ObservableObject {
     private func runShow(
         bridgeAddress: String,
         username: String,
-        lightID: String,
+        lightIDs: [String],
         colors: [HueShowColor],
         duration: Double,
         interval: Double,
@@ -242,10 +273,10 @@ final class HueShowController: ObservableObject {
                 try Task.checkCancellation()
 
                 let showColor = colors[colorIndex % colors.count].bridgeColor
-                try await applyTransition(
+                try await applyTransitionToLights(
                     bridgeAddress: bridgeAddress,
                     username: username,
-                    lightID: lightID,
+                    lightIDs: lightIDs,
                     color: showColor,
                     style: transitionStyle,
                     interval: interval
@@ -267,56 +298,71 @@ final class HueShowController: ObservableObject {
         showTask = nil
     }
 
-    private func applyTransition(
+    private func applyTransitionToLights(
         bridgeAddress: String,
         username: String,
-        lightID: String,
+        lightIDs: [String],
         color: HueBridgeColor,
         style: HueTransitionStyle,
         interval: Double
     ) async throws {
         switch style {
         case .snap, .gradual, .softFade:
-            try await client.setLight(
-                bridgeAddress: bridgeAddress,
-                username: username,
-                lightID: lightID,
-                color: color,
-                transitionSeconds: style.commandTransitionSeconds(for: interval)
-            )
+            for lightID in lightIDs {
+                try Task.checkCancellation()
+                try await client.setLight(
+                    bridgeAddress: bridgeAddress,
+                    username: username,
+                    lightID: lightID,
+                    color: color,
+                    transitionSeconds: style.commandTransitionSeconds(for: interval)
+                )
+            }
         case .pulse:
             let dipSeconds = min(0.45, max(0.12, interval * 0.25))
-            try await client.setLight(
-                bridgeAddress: bridgeAddress,
-                username: username,
-                lightID: lightID,
-                color: color.scaledBrightness(0.2),
-                transitionSeconds: dipSeconds
-            )
+            for lightID in lightIDs {
+                try Task.checkCancellation()
+                try await client.setLight(
+                    bridgeAddress: bridgeAddress,
+                    username: username,
+                    lightID: lightID,
+                    color: color.scaledBrightness(0.2),
+                    transitionSeconds: dipSeconds
+                )
+            }
             try await Task.sleep(nanoseconds: UInt64(dipSeconds * 1_000_000_000))
-            try await client.setLight(
-                bridgeAddress: bridgeAddress,
-                username: username,
-                lightID: lightID,
-                color: color,
-                transitionSeconds: style.commandTransitionSeconds(for: interval)
-            )
+            for lightID in lightIDs {
+                try Task.checkCancellation()
+                try await client.setLight(
+                    bridgeAddress: bridgeAddress,
+                    username: username,
+                    lightID: lightID,
+                    color: color,
+                    transitionSeconds: style.commandTransitionSeconds(for: interval)
+                )
+            }
         case .blink:
-            try await client.setLightPower(
-                bridgeAddress: bridgeAddress,
-                username: username,
-                lightID: lightID,
-                isOn: false,
-                transitionSeconds: 0.0
-            )
+            for lightID in lightIDs {
+                try Task.checkCancellation()
+                try await client.setLightPower(
+                    bridgeAddress: bridgeAddress,
+                    username: username,
+                    lightID: lightID,
+                    isOn: false,
+                    transitionSeconds: 0.0
+                )
+            }
             try await Task.sleep(nanoseconds: 120_000_000)
-            try await client.setLight(
-                bridgeAddress: bridgeAddress,
-                username: username,
-                lightID: lightID,
-                color: color,
-                transitionSeconds: 0.0
-            )
+            for lightID in lightIDs {
+                try Task.checkCancellation()
+                try await client.setLight(
+                    bridgeAddress: bridgeAddress,
+                    username: username,
+                    lightID: lightID,
+                    color: color,
+                    transitionSeconds: 0.0
+                )
+            }
         }
     }
 
@@ -339,13 +385,16 @@ final class HueShowController: ObservableObject {
         let fetchedLights = try await client.fetchLights(bridgeAddress: bridgeAddress, username: username)
         lights = fetchedLights
 
-        if let currentSelection = selectedLightID, fetchedLights.contains(where: { $0.id == currentSelection }) {
-            selectedLightID = currentSelection
-        } else if let configuredLightName = HueBridgeConfiguration.cleaned(bundledBridgeConfig.selectedLightName),
-                  let configuredLight = fetchedLights.first(where: { $0.name.localizedCaseInsensitiveCompare(configuredLightName) == .orderedSame }) {
-            selectedLightID = configuredLight.id
+        let fetchedIDs = Set(fetchedLights.map { $0.id })
+        let stillAvailable = selectedLightIDs.intersection(fetchedIDs)
+        if !stillAvailable.isEmpty {
+            selectedLightIDs = stillAvailable
+        } else if !bundledBridgeConfig.effectiveSelectedLightNames.isEmpty {
+            let configuredNames = Set(bundledBridgeConfig.effectiveSelectedLightNames.map { $0.lowercased() })
+            let configuredLights = fetchedLights.filter { configuredNames.contains($0.name.lowercased()) }
+            selectedLightIDs = Set(configuredLights.map { $0.id })
         } else {
-            selectedLightID = fetchedLights.first?.id
+            selectedLightIDs = Set(fetchedLights.prefix(1).map { $0.id })
         }
 
         statusMessage = "Loaded \(fetchedLights.count) light\(fetchedLights.count == 1 ? "" : "s")."
@@ -383,5 +432,18 @@ final class HueShowController: ObservableObject {
             return HueShowColor.presets
         }
         return saved
+    }
+
+    private static func loadSelectedLightIDs(from config: HueBridgeConfiguration) -> Set<String> {
+        let savedIDs = UserDefaults.standard.stringArray(forKey: selectedLightsKey)?.compactMap(HueBridgeConfiguration.cleaned) ?? []
+        if !savedIDs.isEmpty {
+            return Set(savedIDs)
+        }
+
+        if let legacyID = HueBridgeConfiguration.cleaned(UserDefaults.standard.string(forKey: selectedLightKey)) {
+            return [legacyID]
+        }
+
+        return Set(config.effectiveSelectedLightIDs)
     }
 }

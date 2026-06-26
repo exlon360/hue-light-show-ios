@@ -11,8 +11,12 @@
 	<string></string>
 	<key>selectedLightID</key>
 	<string></string>
+	<key>selectedLightIDs</key>
+	<array/>
 	<key>selectedLightName</key>
 	<string></string>
+	<key>selectedLightNames</key>
+	<array/>
 	<key>autoRefreshLights</key>
 	<true/>
 </dict>

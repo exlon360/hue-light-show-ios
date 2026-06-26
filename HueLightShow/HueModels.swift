@@ -124,11 +124,29 @@ struct HueBridgeConfiguration: Decodable {
     let username: String?
     let applicationKey: String?
     let selectedLightID: String?
+    let selectedLightIDs: [String]?
     let selectedLightName: String?
+    let selectedLightNames: [String]?
     let autoRefreshLights: Bool?
 
     var effectiveUsername: String? {
         Self.cleaned(username) ?? Self.cleaned(applicationKey)
+    }
+
+    var effectiveSelectedLightIDs: [String] {
+        var ids = Self.cleanedArray(selectedLightIDs)
+        if let legacyID = Self.cleaned(selectedLightID) {
+            ids.append(legacyID)
+        }
+        return ids
+    }
+
+    var effectiveSelectedLightNames: [String] {
+        var names = Self.cleanedArray(selectedLightNames)
+        if let legacyName = Self.cleaned(selectedLightName) {
+            names.append(legacyName)
+        }
+        return names
     }
 
     var hasConnectionDefaults: Bool {
@@ -146,7 +164,9 @@ struct HueBridgeConfiguration: Decodable {
                 username: nil,
                 applicationKey: nil,
                 selectedLightID: nil,
+                selectedLightIDs: nil,
                 selectedLightName: nil,
+                selectedLightNames: nil,
                 autoRefreshLights: true
             )
         }
@@ -159,6 +179,10 @@ struct HueBridgeConfiguration: Decodable {
             return nil
         }
         return trimmed
+    }
+
+    static func cleanedArray(_ values: [String]?) -> [String] {
+        values?.compactMap(cleaned) ?? []
     }
 }
 

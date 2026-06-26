@@ -6,7 +6,7 @@ Hue Light Show is a SwiftUI iOS app for running real color-cycle shows on Philip
 
 - Discovers Hue Bridges through the Hue discovery broker.
 - Pairs with the bridge by creating a local Hue API user after the bridge button is pressed.
-- Loads every light returned by the bridge into the light selector.
+- Loads every light returned by the bridge into a multi-select light list.
 - Lets you pick the show duration, cycle speed, and editable color list.
 - Adds more colors with a plus button.
 - Supports transition modes: Snap, Gradual, Soft Fade, Pulse, and Blink.
@@ -21,7 +21,8 @@ Set:
 
 - `bridgeAddress`: your bridge IP or host, such as `192.168.1.25`.
 - `username` or `applicationKey`: the Hue app key created by bridge-button pairing.
-- `selectedLightID` or `selectedLightName`: optional default light selection.
+- `selectedLightIDs` or `selectedLightNames`: optional default multi-light selection.
+- `selectedLightID` or `selectedLightName`: optional legacy single-light defaults.
 
 Do not commit a real Hue username/application key to a public repo. Keep a private local copy for your own builds.
 
