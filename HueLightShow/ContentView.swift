@@ -113,11 +113,24 @@ struct ContentView: View {
                 } else {
                     VStack(spacing: 8) {
                         ForEach(show.lights) { light in
-                            LightSelectionRow(
-                                light: light,
-                                isSelected: show.isLightSelected(light.id)
-                            ) {
-                                show.toggleLightSelection(light.id)
+                            VStack(spacing: 8) {
+                                LightSelectionRow(
+                                    light: light,
+                                    isSelected: show.isLightSelected(light.id)
+                                ) {
+                                    show.toggleLightSelection(light.id)
+                                }
+
+                                if show.isLightSelected(light.id) {
+                                    PerLightSettingsView(
+                                        isCustom: show.usesCustomSettings(light.id),
+                                        transitionStyle: customTransitionBinding(for: light.id),
+                                        colors: show.customColors(for: light.id),
+                                        onToggleCustom: { show.toggleCustomSettings(for: light.id) },
+                                        onAddColor: { show.addCustomColor(for: light.id) },
+                                        colorBinding: { colorID in customColorBinding(for: light.id, colorID: colorID) }
+                                    )
+                                }
                             }
                         }
                     }
@@ -178,7 +191,7 @@ struct ContentView: View {
     }
 
     private var colorsPanel: some View {
-        ControlPanel(title: "Colors", symbolName: "paintpalette.fill") {
+        ControlPanel(title: "Global Lights Group", symbolName: "paintpalette.fill") {
             VStack(spacing: 10) {
                 ForEach(show.colors) { swatch in
                     HStack(spacing: 10) {
@@ -194,17 +207,6 @@ struct ContentView: View {
                             .labelsHidden()
 
                         Spacer()
-
-                        Button {
-                            show.removeColor(id: swatch.id)
-                        } label: {
-                            Image(systemName: "minus.circle.fill")
-                                .font(.title3.weight(.bold))
-                                .frame(width: 38, height: 38)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(show.colors.count > 1 ? .red : .secondary)
-                        .disabled(show.colors.count <= 1)
                     }
                     .frame(minHeight: 46)
                 }
@@ -270,6 +272,22 @@ struct ContentView: View {
             show.colors.first(where: { $0.id == id })?.color ?? .white
         } set: { newColor in
             show.updateColor(id: id, to: newColor)
+        }
+    }
+
+    private func customTransitionBinding(for lightID: String) -> Binding<HueTransitionStyle> {
+        Binding {
+            show.customTransitionStyle(for: lightID)
+        } set: { newStyle in
+            show.setCustomTransitionStyle(newStyle, for: lightID)
+        }
+    }
+
+    private func customColorBinding(for lightID: String, colorID: UUID) -> Binding<Color> {
+        Binding {
+            show.customColors(for: lightID).first(where: { $0.id == colorID })?.color ?? .white
+        } set: { newColor in
+            show.updateCustomColor(lightID: lightID, colorID: colorID, to: newColor)
         }
     }
 }
@@ -354,6 +372,80 @@ private struct LightSelectionRow: View {
             }
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct PerLightSettingsView: View {
+    let isCustom: Bool
+    let transitionStyle: Binding<HueTransitionStyle>
+    let colors: [HueShowColor]
+    let onToggleCustom: () -> Void
+    let onAddColor: () -> Void
+    let colorBinding: (UUID) -> Binding<Color>
+
+    var body: some View {
+        VStack(spacing: 9) {
+            HStack(spacing: 10) {
+                Label(isCustom ? "Custom light" : "Global group", systemImage: isCustom ? "slider.horizontal.3" : "person.2.fill")
+                    .font(.caption.weight(.black))
+
+                Spacer()
+
+                Button {
+                    onToggleCustom()
+                } label: {
+                    Label(isCustom ? "Global" : "Custom", systemImage: isCustom ? "person.2.fill" : "slider.horizontal.3")
+                        .font(.caption.weight(.bold))
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if isCustom {
+                HStack {
+                    Label("Transition", systemImage: transitionStyle.wrappedValue.symbolName)
+                        .font(.caption.weight(.bold))
+
+                    Spacer()
+
+                    Picker("Transition", selection: transitionStyle) {
+                        ForEach(HueTransitionStyle.allCases) { style in
+                            Text(style.title).tag(style)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                VStack(spacing: 8) {
+                    ForEach(colors) { swatch in
+                        HStack(spacing: 10) {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(swatch.color)
+                                .frame(width: 34, height: 34)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                                }
+
+                            ColorPicker("Color", selection: colorBinding(swatch.id), supportsOpacity: false)
+                                .labelsHidden()
+
+                            Spacer()
+                        }
+                    }
+
+                    Button {
+                        onAddColor()
+                    } label: {
+                        Label("Add Custom Color", systemImage: "plus.circle.fill")
+                            .font(.caption.weight(.black))
+                            .frame(maxWidth: .infinity, minHeight: 36)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

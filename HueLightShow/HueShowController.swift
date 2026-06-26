@@ -1,6 +1,12 @@
 import Foundation
 import SwiftUI
 
+private struct HueLightRunSettings {
+    let lightID: String
+    let colors: [HueShowColor]
+    let transitionStyle: HueTransitionStyle
+}
+
 @MainActor
 final class HueShowController: ObservableObject {
     @Published var bridges: [HueBridge] = []
@@ -44,6 +50,11 @@ final class HueShowController: ObservableObject {
             UserDefaults.standard.set(transitionStyle.rawValue, forKey: Self.transitionStyleKey)
         }
     }
+    @Published var customLightSettings: [String: HueLightCustomSettings] {
+        didSet {
+            saveCustomLightSettings()
+        }
+    }
     @Published var statusMessage: String = "Ready."
     @Published var isBusy = false
     @Published var isRunning = false
@@ -61,6 +72,7 @@ final class HueShowController: ObservableObject {
     private static let durationKey = "HueLightShow.duration"
     private static let intervalKey = "HueLightShow.interval"
     private static let transitionStyleKey = "HueLightShow.transitionStyle"
+    private static let customLightSettingsKey = "HueLightShow.customLightSettings"
 
     init(client: HueBridgeClient = .shared) {
         let bundledConfig = HueBridgeConfiguration.loadBundled()
@@ -73,6 +85,7 @@ final class HueShowController: ObservableObject {
         self.username = UserDefaults.standard.string(forKey: Self.usernameKey) ?? bundledConfig.effectiveUsername
         self.selectedLightIDs = Self.loadSelectedLightIDs(from: bundledConfig)
         self.colors = Self.loadColors()
+        self.customLightSettings = Self.loadCustomLightSettings()
 
         let savedDuration = UserDefaults.standard.double(forKey: Self.durationKey)
         self.showDuration = savedDuration > 0 ? savedDuration : 30
@@ -176,21 +189,44 @@ final class HueShowController: ObservableObject {
         selectedLightIDs = Set(lights.map { $0.id })
     }
 
-    func addColor() {
-        let nextColor: HueShowColor
-        switch colors.count % 5 {
-        case 0:
-            nextColor = HueShowColor(red: 1.0, green: 0.3, blue: 0.78)
-        case 1:
-            nextColor = HueShowColor(red: 0.44, green: 0.9, blue: 1.0)
-        case 2:
-            nextColor = HueShowColor(red: 0.98, green: 0.9, blue: 0.26)
-        case 3:
-            nextColor = HueShowColor(red: 0.25, green: 0.92, blue: 0.53)
-        default:
-            nextColor = HueShowColor(red: 1.0, green: 0.46, blue: 0.18)
+    func usesCustomSettings(_ lightID: String) -> Bool {
+        customLightSettings[lightID] != nil
+    }
+
+    func toggleCustomSettings(for lightID: String) {
+        var updated = customLightSettings
+        if updated[lightID] != nil {
+            updated.removeValue(forKey: lightID)
+            statusMessage = "Light returned to the Global group."
+        } else {
+            updated[lightID] = HueLightCustomSettings(colors: colors, transitionStyle: transitionStyle)
+            statusMessage = "Light now has custom settings."
         }
-        colors.append(nextColor)
+        customLightSettings = updated
+    }
+
+    func customColors(for lightID: String) -> [HueShowColor] {
+        customLightSettings[lightID]?.colors ?? colors
+    }
+
+    func customTransitionStyle(for lightID: String) -> HueTransitionStyle {
+        customLightSettings[lightID]?.transitionStyle ?? transitionStyle
+    }
+
+    func setCustomTransitionStyle(_ style: HueTransitionStyle, for lightID: String) {
+        var settings = customLightSettings[lightID] ?? HueLightCustomSettings(colors: colors, transitionStyle: transitionStyle)
+        settings.transitionStyle = style
+        setCustomSettings(settings, for: lightID)
+    }
+
+    func addColor() {
+        colors.append(nextColor(for: colors.count))
+    }
+
+    func addCustomColor(for lightID: String) {
+        var settings = customLightSettings[lightID] ?? HueLightCustomSettings(colors: colors, transitionStyle: transitionStyle)
+        settings.colors.append(nextColor(for: settings.colors.count))
+        setCustomSettings(settings, for: lightID)
     }
 
     func updateColor(id: UUID, to color: Color) {
@@ -202,11 +238,13 @@ final class HueShowController: ObservableObject {
         colors = updatedColors
     }
 
-    func removeColor(id: UUID) {
-        guard colors.count > 1 else {
+    func updateCustomColor(lightID: String, colorID: UUID, to color: Color) {
+        var settings = customLightSettings[lightID] ?? HueLightCustomSettings(colors: colors, transitionStyle: transitionStyle)
+        guard let index = settings.colors.firstIndex(where: { $0.id == colorID }) else {
             return
         }
-        colors.removeAll { $0.id == id }
+        settings.colors[index].update(from: color)
+        setCustomSettings(settings, for: lightID)
     }
 
     func startShow() {
@@ -220,15 +258,14 @@ final class HueShowController: ObservableObject {
         }
 
         let runBridgeAddress = bridgeAddress
-        let runLightIDs = Array(selectedLightIDs).sorted()
-        let runColors = colors
+        let runLightSettings = makeRunSettingsForSelectedLights()
         let runDuration = showDuration
         let runInterval = changeInterval
-        let runTransitionStyle = transitionStyle
+        let customCount = runLightSettings.filter { customLightSettings[$0.lightID] != nil }.count
 
         isRunning = true
         remainingSeconds = Int(ceil(runDuration))
-        statusMessage = "Show running on \(runLightIDs.count) light\(runLightIDs.count == 1 ? "" : "s") with \(runTransitionStyle.title)."
+        statusMessage = "Show running on \(runLightSettings.count) light\(runLightSettings.count == 1 ? "" : "s") (\(customCount) custom)."
 
         showTask = Task { [weak self] in
             guard let self = self else {
@@ -237,11 +274,9 @@ final class HueShowController: ObservableObject {
             await self.runShow(
                 bridgeAddress: runBridgeAddress,
                 username: username,
-                lightIDs: runLightIDs,
-                colors: runColors,
+                lightSettings: runLightSettings,
                 duration: runDuration,
-                interval: runInterval,
-                transitionStyle: runTransitionStyle
+                interval: runInterval
             )
         }
     }
@@ -259,11 +294,9 @@ final class HueShowController: ObservableObject {
     private func runShow(
         bridgeAddress: String,
         username: String,
-        lightIDs: [String],
-        colors: [HueShowColor],
+        lightSettings: [HueLightRunSettings],
         duration: Double,
-        interval: Double,
-        transitionStyle: HueTransitionStyle
+        interval: Double
     ) async {
         let endDate = Date().addingTimeInterval(duration)
         var colorIndex = 0
@@ -272,18 +305,17 @@ final class HueShowController: ObservableObject {
             while Date() < endDate {
                 try Task.checkCancellation()
 
-                let showColor = colors[colorIndex % colors.count].bridgeColor
-                try await applyTransitionToLights(
+                try await applyTransitionsForLightSettings(
                     bridgeAddress: bridgeAddress,
                     username: username,
-                    lightIDs: lightIDs,
-                    color: showColor,
-                    style: transitionStyle,
+                    lightSettings: lightSettings,
+                    colorIndex: colorIndex,
                     interval: interval
                 )
 
                 colorIndex += 1
-                try await sleepWithProgress(maxSeconds: transitionStyle.waitSeconds(for: interval), endDate: endDate)
+                let waitSeconds = lightSettings.map { $0.transitionStyle.waitSeconds(for: interval) }.max() ?? interval
+                try await sleepWithProgress(maxSeconds: waitSeconds, endDate: endDate)
             }
 
             statusMessage = "Show complete."
@@ -298,11 +330,50 @@ final class HueShowController: ObservableObject {
         showTask = nil
     }
 
+    private func makeRunSettingsForSelectedLights() -> [HueLightRunSettings] {
+        Array(selectedLightIDs).sorted().map { lightID in
+            let customSettings = customLightSettings[lightID]
+            let lightColors = customSettings?.colors ?? colors
+            return HueLightRunSettings(
+                lightID: lightID,
+                colors: lightColors.isEmpty ? HueShowColor.presets : lightColors,
+                transitionStyle: customSettings?.transitionStyle ?? transitionStyle
+            )
+        }
+    }
+
+    private func applyTransitionsForLightSettings(
+        bridgeAddress: String,
+        username: String,
+        lightSettings: [HueLightRunSettings],
+        colorIndex: Int,
+        interval: Double
+    ) async throws {
+        let groupedSettings = Dictionary(grouping: lightSettings, by: { $0.transitionStyle })
+        for style in HueTransitionStyle.allCases {
+            guard let settingsForStyle = groupedSettings[style] else {
+                continue
+            }
+            let lightIDs = settingsForStyle.map { $0.lightID }
+            let colorsByLightID = Dictionary(uniqueKeysWithValues: settingsForStyle.map { settings in
+                (settings.lightID, settings.colors[colorIndex % settings.colors.count].bridgeColor)
+            })
+            try await applyTransitionToLights(
+                bridgeAddress: bridgeAddress,
+                username: username,
+                lightIDs: lightIDs,
+                colorsByLightID: colorsByLightID,
+                style: style,
+                interval: interval
+            )
+        }
+    }
+
     private func applyTransitionToLights(
         bridgeAddress: String,
         username: String,
         lightIDs: [String],
-        color: HueBridgeColor,
+        colorsByLightID: [String: HueBridgeColor],
         style: HueTransitionStyle,
         interval: Double
     ) async throws {
@@ -310,6 +381,9 @@ final class HueShowController: ObservableObject {
         case .snap, .gradual, .softFade:
             for lightID in lightIDs {
                 try Task.checkCancellation()
+                guard let color = colorsByLightID[lightID] else {
+                    continue
+                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -322,6 +396,9 @@ final class HueShowController: ObservableObject {
             let dipSeconds = min(0.45, max(0.12, interval * 0.25))
             for lightID in lightIDs {
                 try Task.checkCancellation()
+                guard let color = colorsByLightID[lightID] else {
+                    continue
+                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -333,6 +410,9 @@ final class HueShowController: ObservableObject {
             try await Task.sleep(nanoseconds: UInt64(dipSeconds * 1_000_000_000))
             for lightID in lightIDs {
                 try Task.checkCancellation()
+                guard let color = colorsByLightID[lightID] else {
+                    continue
+                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -355,6 +435,9 @@ final class HueShowController: ObservableObject {
             try await Task.sleep(nanoseconds: 120_000_000)
             for lightID in lightIDs {
                 try Task.checkCancellation()
+                guard let color = colorsByLightID[lightID] else {
+                    continue
+                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -417,9 +500,36 @@ final class HueShowController: ObservableObject {
         }
     }
 
+    private func setCustomSettings(_ settings: HueLightCustomSettings, for lightID: String) {
+        var updated = customLightSettings
+        updated[lightID] = settings
+        customLightSettings = updated
+    }
+
+    private func nextColor(for count: Int) -> HueShowColor {
+        switch count % 5 {
+        case 0:
+            return HueShowColor(red: 1.0, green: 0.3, blue: 0.78)
+        case 1:
+            return HueShowColor(red: 0.44, green: 0.9, blue: 1.0)
+        case 2:
+            return HueShowColor(red: 0.98, green: 0.9, blue: 0.26)
+        case 3:
+            return HueShowColor(red: 0.25, green: 0.92, blue: 0.53)
+        default:
+            return HueShowColor(red: 1.0, green: 0.46, blue: 0.18)
+        }
+    }
+
     private func saveColors() {
         if let data = try? JSONEncoder().encode(colors) {
             UserDefaults.standard.set(data, forKey: Self.colorsKey)
+        }
+    }
+
+    private func saveCustomLightSettings() {
+        if let data = try? JSONEncoder().encode(customLightSettings) {
+            UserDefaults.standard.set(data, forKey: Self.customLightSettingsKey)
         }
     }
 
@@ -430,6 +540,16 @@ final class HueShowController: ObservableObject {
             !saved.isEmpty
         else {
             return HueShowColor.presets
+        }
+        return saved
+    }
+
+    private static func loadCustomLightSettings() -> [String: HueLightCustomSettings] {
+        guard
+            let data = UserDefaults.standard.data(forKey: customLightSettingsKey),
+            let saved = try? JSONDecoder().decode([String: HueLightCustomSettings].self, from: data)
+        else {
+            return [:]
         }
         return saved
     }

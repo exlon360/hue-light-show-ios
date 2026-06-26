@@ -119,6 +119,16 @@ struct HueBridgeColor: Equatable {
     }
 }
 
+struct HueLightCustomSettings: Codable, Equatable {
+    var colors: [HueShowColor]
+    var transitionStyle: HueTransitionStyle
+
+    init(colors: [HueShowColor], transitionStyle: HueTransitionStyle) {
+        self.colors = colors.isEmpty ? HueShowColor.presets : colors
+        self.transitionStyle = transitionStyle
+    }
+}
+
 struct HueBridgeConfiguration: Decodable {
     let bridgeAddress: String?
     let username: String?
