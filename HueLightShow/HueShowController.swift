@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 private struct HueLightRunSettings {
     let lightID: String
@@ -40,6 +41,11 @@ final class HueShowController: ObservableObject {
             UserDefaults.standard.set(showDuration, forKey: Self.durationKey)
         }
     }
+    @Published var isInfiniteDuration: Bool {
+        didSet {
+            UserDefaults.standard.set(isInfiniteDuration, forKey: Self.infiniteDurationKey)
+        }
+    }
     @Published var changeInterval: Double {
         didSet {
             UserDefaults.standard.set(changeInterval, forKey: Self.intervalKey)
@@ -63,6 +69,7 @@ final class HueShowController: ObservableObject {
     private let client: HueBridgeClient
     private let bundledBridgeConfig: HueBridgeConfiguration
     private var showTask: Task<Void, Never>?
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     private static let bridgeAddressKey = "HueLightShow.bridgeAddress"
     private static let usernameKey = "HueLightShow.username"
@@ -70,6 +77,7 @@ final class HueShowController: ObservableObject {
     private static let selectedLightsKey = "HueLightShow.selectedLightIDs"
     private static let colorsKey = "HueLightShow.colors"
     private static let durationKey = "HueLightShow.duration"
+    private static let infiniteDurationKey = "HueLightShow.isInfiniteDuration"
     private static let intervalKey = "HueLightShow.interval"
     private static let transitionStyleKey = "HueLightShow.transitionStyle"
     private static let customLightSettingsKey = "HueLightShow.customLightSettings"
@@ -89,6 +97,7 @@ final class HueShowController: ObservableObject {
 
         let savedDuration = UserDefaults.standard.double(forKey: Self.durationKey)
         self.showDuration = savedDuration > 0 ? savedDuration : 30
+        self.isInfiniteDuration = UserDefaults.standard.bool(forKey: Self.infiniteDurationKey)
 
         let savedInterval = UserDefaults.standard.double(forKey: Self.intervalKey)
         self.changeInterval = savedInterval > 0 ? savedInterval : 1.2
@@ -132,7 +141,7 @@ final class HueShowController: ObservableObject {
         isPaired &&
         !selectedLightIDs.isEmpty &&
         !colors.isEmpty &&
-        showDuration >= 1 &&
+        (isInfiniteDuration || showDuration >= 1) &&
         changeInterval >= 0.2 &&
         !isBusy &&
         !isRunning
@@ -247,6 +256,24 @@ final class HueShowController: ObservableObject {
         setCustomSettings(settings, for: lightID)
     }
 
+    func removeColor(id: UUID) {
+        guard colors.count > 1 else {
+            statusMessage = "Keep at least one global color."
+            return
+        }
+        colors.removeAll { $0.id == id }
+    }
+
+    func removeCustomColor(lightID: String, colorID: UUID) {
+        var settings = customLightSettings[lightID] ?? HueLightCustomSettings(colors: colors, transitionStyle: transitionStyle)
+        guard settings.colors.count > 1 else {
+            statusMessage = "Keep at least one custom color."
+            return
+        }
+        settings.colors.removeAll { $0.id == colorID }
+        setCustomSettings(settings, for: lightID)
+    }
+
     func startShow() {
         guard canStart else {
             statusMessage = "Select a paired bridge and at least one light first."
@@ -259,13 +286,16 @@ final class HueShowController: ObservableObject {
 
         let runBridgeAddress = bridgeAddress
         let runLightSettings = makeRunSettingsForSelectedLights()
-        let runDuration = showDuration
+        let runDuration = isInfiniteDuration ? nil : showDuration
         let runInterval = changeInterval
         let customCount = runLightSettings.filter { customLightSettings[$0.lightID] != nil }.count
 
         isRunning = true
-        remainingSeconds = Int(ceil(runDuration))
-        statusMessage = "Show running on \(runLightSettings.count) light\(runLightSettings.count == 1 ? "" : "s") (\(customCount) custom)."
+        remainingSeconds = runDuration.map { Int(ceil($0)) } ?? 0
+        setIdleTimerDisabled(true)
+        beginBackgroundRunAllowance()
+        let durationText = isInfiniteDuration ? "forever" : "\(Int(showDuration))s"
+        statusMessage = "Running \(durationText) on \(runLightSettings.count) light\(runLightSettings.count == 1 ? "" : "s") (\(customCount) custom)."
 
         showTask = Task { [weak self] in
             guard let self = self else {
@@ -281,11 +311,13 @@ final class HueShowController: ObservableObject {
         }
     }
 
-    func stopShow() {
+    func stopShow(message: String = "Show stopped.") {
         showTask?.cancel()
         showTask = nil
+        setIdleTimerDisabled(false)
+        endBackgroundRunAllowance()
         if isRunning {
-            statusMessage = "Show stopped."
+            statusMessage = message
         }
         isRunning = false
         remainingSeconds = 0
@@ -295,14 +327,14 @@ final class HueShowController: ObservableObject {
         bridgeAddress: String,
         username: String,
         lightSettings: [HueLightRunSettings],
-        duration: Double,
+        duration: Double?,
         interval: Double
     ) async {
-        let endDate = Date().addingTimeInterval(duration)
+        let endDate = duration.map { Date().addingTimeInterval($0) }
         var colorIndex = 0
 
         do {
-            while Date() < endDate {
+            while shouldContinueRunning(until: endDate) {
                 try Task.checkCancellation()
 
                 try await applyTransitionsForLightSettings(
@@ -320,13 +352,17 @@ final class HueShowController: ObservableObject {
 
             statusMessage = "Show complete."
         } catch is CancellationError {
-            statusMessage = "Show stopped."
+            if statusMessage != "iOS ended background time." {
+                statusMessage = "Show stopped."
+            }
         } catch {
             statusMessage = error.localizedDescription
         }
 
         isRunning = false
         remainingSeconds = 0
+        setIdleTimerDisabled(false)
+        endBackgroundRunAllowance()
         showTask = nil
     }
 
@@ -449,12 +485,28 @@ final class HueShowController: ObservableObject {
         }
     }
 
-    private func sleepWithProgress(maxSeconds: Double, endDate: Date) async throws {
-        let nextWake = min(Date().addingTimeInterval(maxSeconds), endDate)
+    private func shouldContinueRunning(until endDate: Date?) -> Bool {
+        guard let endDate = endDate else {
+            return true
+        }
+        return Date() < endDate
+    }
+
+    private func sleepWithProgress(maxSeconds: Double, endDate: Date?) async throws {
+        let nextWake: Date
+        if let endDate = endDate {
+            nextWake = min(Date().addingTimeInterval(maxSeconds), endDate)
+        } else {
+            nextWake = Date().addingTimeInterval(maxSeconds)
+        }
 
         while Date() < nextWake {
             try Task.checkCancellation()
-            remainingSeconds = max(0, Int(ceil(endDate.timeIntervalSinceNow)))
+            if let endDate = endDate {
+                remainingSeconds = max(0, Int(ceil(endDate.timeIntervalSinceNow)))
+            } else {
+                remainingSeconds = 0
+            }
             let slice = min(0.2, max(0.05, nextWake.timeIntervalSinceNow))
             try await Task.sleep(nanoseconds: UInt64(slice * 1_000_000_000))
         }
@@ -498,6 +550,27 @@ final class HueShowController: ObservableObject {
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    private func setIdleTimerDisabled(_ disabled: Bool) {
+        UIApplication.shared.isIdleTimerDisabled = disabled
+    }
+
+    private func beginBackgroundRunAllowance() {
+        endBackgroundRunAllowance()
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "HueLightShow") { [weak self] in
+            Task { @MainActor in
+                self?.stopShow(message: "iOS ended background time.")
+            }
+        }
+    }
+
+    private func endBackgroundRunAllowance() {
+        guard backgroundTaskID != .invalid else {
+            return
+        }
+        UIApplication.shared.endBackgroundTask(backgroundTaskID)
+        backgroundTaskID = .invalid
     }
 
     private func setCustomSettings(_ settings: HueLightCustomSettings, for lightID: String) {
