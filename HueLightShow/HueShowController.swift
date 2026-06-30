@@ -6,6 +6,7 @@ private struct HueLightRunGroup {
     let lightIDs: [String]
     let colors: [HueShowColor]
     let transitionStyle: HueTransitionStyle
+    let pattern: HueGlobalPattern
     let isCustom: Bool
 }
 
@@ -63,6 +64,11 @@ final class HueShowController: ObservableObject {
             UserDefaults.standard.set(transitionStyle.rawValue, forKey: Self.transitionStyleKey)
         }
     }
+    @Published var globalPattern: HueGlobalPattern {
+        didSet {
+            UserDefaults.standard.set(globalPattern.rawValue, forKey: Self.globalPatternKey)
+        }
+    }
     @Published var customLightSettings: [String: HueLightCustomSettings] {
         didSet {
             saveCustomLightSettings()
@@ -87,6 +93,7 @@ final class HueShowController: ObservableObject {
     private static let infiniteDurationKey = "HueLightShow.isInfiniteDuration"
     private static let intervalKey = "HueLightShow.interval"
     private static let transitionStyleKey = "HueLightShow.transitionStyle"
+    private static let globalPatternKey = "HueLightShow.globalPattern"
     private static let customLightSettingsKey = "HueLightShow.customLightSettings"
 
     init(client: HueBridgeClient = .shared) {
@@ -111,6 +118,8 @@ final class HueShowController: ObservableObject {
 
         let savedTransition = UserDefaults.standard.string(forKey: Self.transitionStyleKey)
         self.transitionStyle = savedTransition.flatMap(HueTransitionStyle.init(rawValue:)) ?? .gradual
+        let savedPattern = UserDefaults.standard.string(forKey: Self.globalPatternKey)
+        self.globalPattern = savedPattern.flatMap(HueGlobalPattern.init(rawValue:)) ?? .together
 
         if bundledConfig.hasConnectionDefaults {
             self.statusMessage = "Loaded BridgeConfig.plist."
@@ -142,6 +151,12 @@ final class HueShowController: ObservableObject {
             return visibleNames.joined(separator: ", ")
         }
         return "\(visibleNames[0]), \(visibleNames[1]) +\(visibleNames.count - 2)"
+    }
+
+    private var orderedSelectedLightIDs: [String] {
+        let visibleIDs = lights.map(\.id).filter { selectedLightIDs.contains($0) }
+        let missingVisibleIDs = selectedLightIDs.subtracting(Set(visibleIDs)).sorted()
+        return visibleIDs + missingVisibleIDs
     }
 
     var canStart: Bool {
@@ -352,12 +367,12 @@ final class HueShowController: ObservableObject {
                     try Task.checkCancellation()
 
                     let state = runStates[index]
-                    let showColor = state.group.colors[state.colorIndex % state.group.colors.count].bridgeColor
+                    let colorsByLightID = colorsByLightID(for: state)
                     try await applyTransitionToLights(
                         bridgeAddress: bridgeAddress,
                         username: username,
                         lightIDs: state.group.lightIDs,
-                        color: showColor,
+                        colorsByLightID: colorsByLightID,
                         style: state.group.transitionStyle,
                         interval: interval
                     )
@@ -387,8 +402,8 @@ final class HueShowController: ObservableObject {
     }
 
     private func makeRunGroupsForSelectedLights() -> [HueLightRunGroup] {
-        let sortedSelectedLightIDs = Array(selectedLightIDs).sorted()
-        let globalLightIDs = sortedSelectedLightIDs.filter { customLightSettings[$0] == nil }
+        let selectedLightIDsInOrder = orderedSelectedLightIDs
+        let globalLightIDs = selectedLightIDsInOrder.filter { customLightSettings[$0] == nil }
         var groups: [HueLightRunGroup] = []
 
         if !globalLightIDs.isEmpty {
@@ -397,12 +412,13 @@ final class HueShowController: ObservableObject {
                     lightIDs: globalLightIDs,
                     colors: colors.isEmpty ? HueShowColor.presets : colors,
                     transitionStyle: transitionStyle,
+                    pattern: globalPattern,
                     isCustom: false
                 )
             )
         }
 
-        for lightID in sortedSelectedLightIDs {
+        for lightID in selectedLightIDsInOrder {
             guard let customSettings = customLightSettings[lightID] else {
                 continue
             }
@@ -411,6 +427,7 @@ final class HueShowController: ObservableObject {
                     lightIDs: [lightID],
                     colors: customSettings.colors.isEmpty ? HueShowColor.presets : customSettings.colors,
                     transitionStyle: customSettings.transitionStyle,
+                    pattern: .together,
                     isCustom: true
                 )
             )
@@ -419,11 +436,24 @@ final class HueShowController: ObservableObject {
         return groups
     }
 
+    private func colorsByLightID(for state: HueLightRunState) -> [String: HueBridgeColor] {
+        switch state.group.pattern {
+        case .together:
+            let color = state.group.colors[state.colorIndex % state.group.colors.count].bridgeColor
+            return Dictionary(uniqueKeysWithValues: state.group.lightIDs.map { ($0, color) })
+        case .fairyLights:
+            return Dictionary(uniqueKeysWithValues: state.group.lightIDs.enumerated().map { offset, lightID in
+                let colorIndex = (state.colorIndex + offset) % state.group.colors.count
+                return (lightID, state.group.colors[colorIndex].bridgeColor)
+            })
+        }
+    }
+
     private func applyTransitionToLights(
         bridgeAddress: String,
         username: String,
         lightIDs: [String],
-        color: HueBridgeColor,
+        colorsByLightID: [String: HueBridgeColor],
         style: HueTransitionStyle,
         interval: Double
     ) async throws {
@@ -431,6 +461,9 @@ final class HueShowController: ObservableObject {
         case .snap, .gradual, .softFade:
             for lightID in lightIDs {
                 try Task.checkCancellation()
+                guard let color = colorsByLightID[lightID] else {
+                    continue
+                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -443,6 +476,9 @@ final class HueShowController: ObservableObject {
             let dipSeconds = min(0.45, max(0.12, interval * 0.25))
             for lightID in lightIDs {
                 try Task.checkCancellation()
+                guard let color = colorsByLightID[lightID] else {
+                    continue
+                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -454,6 +490,9 @@ final class HueShowController: ObservableObject {
             try await Task.sleep(nanoseconds: UInt64(dipSeconds * 1_000_000_000))
             for lightID in lightIDs {
                 try Task.checkCancellation()
+                guard let color = colorsByLightID[lightID] else {
+                    continue
+                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,
@@ -476,6 +515,9 @@ final class HueShowController: ObservableObject {
             try await Task.sleep(nanoseconds: 120_000_000)
             for lightID in lightIDs {
                 try Task.checkCancellation()
+                guard let color = colorsByLightID[lightID] else {
+                    continue
+                }
                 try await client.setLight(
                     bridgeAddress: bridgeAddress,
                     username: username,

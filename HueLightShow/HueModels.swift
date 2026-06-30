@@ -274,3 +274,30 @@ enum HueTransitionStyle: String, CaseIterable, Codable, Identifiable {
         }
     }
 }
+
+enum HueGlobalPattern: String, CaseIterable, Codable, Identifiable {
+    case together
+    case fairyLights
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .together:
+            return "Together"
+        case .fairyLights:
+            return "Fairy Lights"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .together:
+            return "circle.grid.2x2.fill"
+        case .fairyLights:
+            return "lightspectrum.horizontal"
+        }
+    }
+}

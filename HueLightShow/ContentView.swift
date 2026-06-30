@@ -164,6 +164,20 @@ struct ContentView: View {
                     .pickerStyle(.menu)
                 }
 
+                HStack(spacing: 10) {
+                    Label("Global pattern", systemImage: show.globalPattern.symbolName)
+                        .font(.subheadline.weight(.semibold))
+
+                    Spacer()
+
+                    Picker("Global pattern", selection: $show.globalPattern) {
+                        ForEach(HueGlobalPattern.allCases) { pattern in
+                            Text(pattern.title).tag(pattern)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
                 Divider()
 
                 VStack(alignment: .leading, spacing: 10) {

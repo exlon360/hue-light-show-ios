@@ -9,6 +9,7 @@ Hue Light Show is a SwiftUI iOS app for running real color-cycle shows on Philip
 - Loads every light returned by the bridge into a multi-select light list.
 - Lets you pick a timed or infinite show, cycle speed, and editable color list.
 - Adds colors with a plus button and removes colors with the `x` button beside each swatch.
+- Adds a Global Pattern picker with `Together` and `Fairy Lights`; Fairy Lights maps bulb 1 to color 1, bulb 2 to color 2, and keeps rotating.
 - Lets selected lights follow the shared Global Lights Group or switch to their own custom colors and transition.
 - Keeps the screen awake while a show runs and asks iOS for background time if the app is backgrounded.
 - Supports transition modes: Snap, Gradual, Soft Fade, Pulse, and Blink.
@@ -22,6 +23,8 @@ Every selected light starts in the Global Lights Group. Change the Global Lights
 Tap `Custom` under a selected light to give that light its own color cycle and transition. Tap `Global` again to put it back into the shared Global Lights Group.
 
 Global and custom lights run together when START is tapped. Custom lights are removed from the Global Lights Group at runtime and each custom light gets its own color cycle, transition, and timing state.
+
+The Global Pattern setting only affects lights that are still in the Global Lights Group. Custom lights keep their own custom colors and transition.
 
 ## Infinite Shows And Backgrounding
 
